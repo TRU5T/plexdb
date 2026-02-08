@@ -1,0 +1,3 @@
+# CLI: no extra deps (Python 3.8+ stdlib). Optional: sqlite3 CLI for --recover.
+# Web UI:
+flask>=2.0
