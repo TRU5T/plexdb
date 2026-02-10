@@ -68,6 +68,19 @@ Then open **http://localhost:5000**. Set **Start browse at** to `/data` (or the 
 - **Use your own `bin/sqlite3`**: Put a `sqlite3` binary in `bin/` before building; the Dockerfile will still run the download but you can overwrite by copying first:  
   `COPY bin/ /app/bin/` before the RUN that downloads.
 
+### Unraid Docker template
+
+An Unraid XML template is in **`docs/plexdb-merge.xml`**. It uses **GitHub Container Registry** (`ghcr.io/tru5t/plexdb-merge`).
+
+1. **Build and push the image** to GHCR (see [Publishing Docker images](https://docs.github.com/en/actions/publishing-packages/publishing-docker-images)):
+   ```bash
+   docker build -t ghcr.io/TRU5T/plexdb-merge:latest .
+   docker push ghcr.io/TRU5T/plexdb-merge:latest
+   ```
+2. **On Unraid**: **Docker** → **Add Container** → add a template repository `https://raw.githubusercontent.com/TRU5T/plexdb/main/docs/` (or copy `docs/plexdb-merge.xml` to `/boot/config/plugins/dockerMan/templates-user/`), then add the container from the **Plex DB Merge** template.
+
+Map the **Data** path to where your Plex DBs live (e.g. `/mnt/user/appdata/plex/.../Databases`). Open the Web UI on **http://Tower:5000** (or your Unraid IP) and set **Start browse at** to `/data`.
+
 ## Run on Unraid
 
 Run the app **on the Unraid server** so the file browser can see `/mnt/user` and your Plex DB paths.

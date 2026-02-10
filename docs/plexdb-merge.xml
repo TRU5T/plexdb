@@ -1,0 +1,20 @@
+<?xml version="1.0"?>
+<Container>
+  <Name>Plex DB Merge</Name>
+  <Repository>ghcr.io/tru5t/plexdb-merge:latest</Repository>
+  <Registry>https://github.com/TRU5T/plexdb/pkgs/container/plexdb-merge</Registry>
+  <Network>bridge</Network>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/TRU5T/plexdb/issues</Support>
+  <Project>https://github.com/TRU5T/plexdb</Project>
+  <TemplateURL>https://raw.githubusercontent.com/TRU5T/plexdb/main/docs/plexdb-merge.xml</TemplateURL>
+  <Overview>Merge data from a corrupt Plex database into an older good backup. Web UI to compare and merge watch history, settings, and optionally new library items. Uses bundled SQLite with .recover support.</Overview>
+  <Category>Utility</Category>
+  <WebUI>http://[IP]:[PORT:5000]/</WebUI>
+  <Icon>https://raw.githubusercontent.com/TRU5T/plexdb/main/docs/icon.png</Icon>
+  <Config Name="WebUI Port" Target="5000" Default="5000" Mode="tcp" Description="Plex DB Merge web interface port." Type="Port" Display="always" Required="true" Mask="false">5000</Config>
+  <Config Name="Data (Plex DB path)" Target="/data" Default="/mnt/user/appdata/plex" Mode="rw" Description="Host path to folder containing your Plex DBs (e.g. appdata/plex or Plex Media Server Plug-in Support/Databases). In the UI set Start browse at to /data." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/plex</Config>
+  <Config Name="BROWSE_ROOT" Target="BROWSE_ROOT" Default="/data" Mode="" Description="Browse root for file picker (match the Data path)." Type="Variable" Display="advanced" Required="false" Mask="false">/data</Config>
+  <Config Name="PUID" Target="PUID" Default="99" Mode="" Description="Run container as this user ID (Unraid default 99)." Type="Variable" Display="advanced" Required="false" Mask="false">99</Config>
+  <Config Name="PGID" Target="PGID" Default="100" Mode="" Description="Run container as this group ID (Unraid default 100)." Type="Variable" Display="advanced" Required="false" Mask="false">100</Config>
+</Container>
