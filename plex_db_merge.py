@@ -134,11 +134,17 @@ def run_merge(
                 meta_added = merge_new_library_items(old_conn, new_conn, out_conn)
                 log(f"Merged new library items: {meta_added} metadata_items.")
 
-            try:
-                out_conn.execute("PRAGMA integrity_check")
+            ok_ic, messages_ic, err_ic = run_pragma_integrity_check(output_path)
+            if err_ic:
+                log(f"Output DB integrity check failed: {err_ic}")
+            elif ok_ic:
                 log("Output DB integrity check: ok.")
-            except Exception as e:
-                log(f"Output DB integrity check skipped (Plex custom schema): {e}")
+            elif messages_ic:
+                log("Output DB integrity_check reported issues:")
+                for msg in messages_ic:
+                    log(f"  - {msg}")
+            else:
+                log("Output DB integrity_check returned no rows.")
         finally:
             old_conn.close()
             new_conn.close()
@@ -310,6 +316,40 @@ def try_open_db(path: str, skip_integrity_check: bool = True) -> sqlite3.Connect
     except Exception as e:
         log(f"Could not open DB {path}: {e}")
         return None
+
+
+def run_pragma_integrity_check(
+    path: str,
+) -> tuple[bool, list[str] | None, str | None]:
+    """
+    Run PRAGMA integrity_check on the given DB file.
+
+    Returns (ok, messages, error):
+      - ok: True if SQLite reported "ok"
+      - messages: list of result rows from integrity_check
+      - error: error message if the pragma itself failed
+    """
+    path = _normalize_path(path)
+    if not os.path.isfile(path):
+        return False, None, f"File not found: {path}"
+    try:
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    except Exception as e:
+        return False, None, f"Could not open DB: {e}"
+    try:
+        cur = conn.execute("PRAGMA integrity_check")
+        rows = cur.fetchall()
+    except Exception as e:
+        return False, None, f"Integrity check failed: {e}"
+    finally:
+        conn.close()
+
+    messages = [r[0] for r in rows if r and isinstance(r[0], str)]
+    if not messages:
+        return False, messages, "Integrity check returned no rows."
+    if len(messages) == 1 and messages[0].lower() == "ok":
+        return True, messages, None
+    return False, messages, None
 
 
 def _sqlite3_cmd() -> list[str]:

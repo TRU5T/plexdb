@@ -12,7 +12,7 @@ from datetime import datetime
 from flask import Flask, render_template_string, request, jsonify
 
 import plex_db_merge
-from plex_db_merge import run_merge, preview_merge
+from plex_db_merge import run_merge, preview_merge, run_pragma_integrity_check
 
 app = Flask(__name__)
 
@@ -210,6 +210,23 @@ def status():
             "error": _state["error"],
             "log_path": _state.get("log_path"),
         })
+
+
+@app.route("/integrity_check", methods=["POST"])
+def integrity_check():
+    """Run PRAGMA integrity_check on a given DB path and return the raw messages."""
+    data = request.get_json() or {}
+    path = (data.get("path") or "").strip()
+    if not path:
+        return jsonify({"ok": False, "error": "Path is required."}), 400
+    ok_ic, messages_ic, err_ic = run_pragma_integrity_check(path)
+    resp = {
+        "ok": bool(ok_ic),
+        "messages": messages_ic or [],
+        "error": err_ic,
+    }
+    # Always 200 so the UI can display detailed messages, even when there are errors.
+    return jsonify(resp)
 
 
 @app.route("/browse_root")
@@ -535,6 +552,9 @@ INDEX_HTML = """<!DOCTYPE html>
     const browseCancelBtn = document.getElementById('browseCancel');
     const previewBtn = document.getElementById('previewBtn');
     const compareResult = document.getElementById('compareResult');
+    const checkPath = document.getElementById('check_path');
+    const checkBtn = document.getElementById('checkBtn');
+    const checkResult = document.getElementById('checkResult');
 
     let pollTimer = null;
     let browseTargetId = null;
@@ -772,6 +792,57 @@ INDEX_HTML = """<!DOCTYPE html>
           alert('Request failed.');
           runBtn.disabled = false;
           setStatus('Idle', 'status-idle');
+        });
+    });
+
+    checkBtn.addEventListener('click', () => {
+      let p = (checkPath.value || '').trim();
+      if (!p) {
+        // Fall back to other known paths if user left it empty
+        p = (outputPath.value || newPath.value || oldPath.value || '').trim();
+      }
+      if (!p) {
+        alert('Enter a DB path to check (or fill one of the Old/New/Output fields).');
+        return;
+      }
+      checkPath.value = p;
+      checkBtn.disabled = true;
+      checkResult.style.display = 'block';
+      checkResult.innerHTML = '<span class="sub">Running PRAGMA integrity_check…</span>';
+      fetch('/integrity_check', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: p })
+      })
+        .then(r => r.json())
+        .then(d => {
+          checkBtn.disabled = false;
+          const msgs = d.messages || [];
+          if (d.error && !msgs.length && !d.ok) {
+            checkResult.innerHTML = '<span style="color: var(--danger);">' + d.error + '</span>';
+            return;
+          }
+          if (d.ok && msgs.length === 1 && msgs[0].toLowerCase() === 'ok') {
+            checkResult.innerHTML = '<span style="color: var(--success);">integrity_check: OK</span>';
+            return;
+          }
+          let html = '';
+          if (d.error) {
+            html += '<span style="color: var(--danger);">' + d.error + '</span><br>';
+          }
+          if (msgs.length) {
+            html += '<strong>integrity_check reported ' + msgs.length + ' issue(s):</strong><br>' +
+              '<pre class="sub" style="margin-top:0.5rem; white-space:pre-wrap; max-height:12rem; overflow:auto; border:1px solid var(--border); padding:0.5rem;">' +
+              msgs.join('\\n') + '</pre>';
+          }
+          if (!html) {
+            html = '<span class="sub">No output from integrity_check.</span>';
+          }
+          checkResult.innerHTML = html;
+        })
+        .catch(() => {
+          checkBtn.disabled = false;
+          checkResult.innerHTML = '<span style="color: var(--danger);">Request failed.</span>';
         });
     });
   </script>
