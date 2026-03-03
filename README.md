@@ -72,14 +72,27 @@ Then open **http://localhost:5000**. Set **Start browse at** to `/data` (or the 
 
 An Unraid XML template is in **`docs/plexdb-merge.xml`**. It uses **GitHub Container Registry** (`ghcr.io/tru5t/plexdb-merge`).
 
-1. **Build and push the image** to GHCR (see [Publishing Docker images](https://docs.github.com/en/actions/publishing-packages/publishing-docker-images)):
-   ```bash
-   docker build -t ghcr.io/TRU5T/plexdb-merge:latest .
-   docker push ghcr.io/TRU5T/plexdb-merge:latest
-   ```
-2. **On Unraid**: **Docker** → **Add Container** → add a template repository `https://raw.githubusercontent.com/TRU5T/plexdb/main/docs/` (or copy `docs/plexdb-merge.xml` to `/boot/config/plugins/dockerMan/templates-user/`), then add the container from the **Plex DB Merge** template.
+**If you get "Unable to find image" or "denied"**: the image is not on GHCR yet. Either build and run locally, or push the image first.
 
-Map the **Data** path to where your Plex DBs live (e.g. `/mnt/user/appdata/plex/.../Databases`). Open the Web UI on **http://Tower:5000** (or your Unraid IP) and set **Start browse at** to `/data`.
+- **Build and run locally** (same as Unraid run):
+  ```bash
+  cd /path/to/plexdb
+  docker build -t ghcr.io/tru5t/plexdb-merge:latest .
+  docker run -d --name PlexDBMerge -p 2000:5000 -v /mnt/user/appdata/plexdb:/data ghcr.io/tru5t/plexdb-merge:latest
+  ```
+  Then open **http://Tower:2000** (or your host IP). See **`docs/docker-run-example.sh`** for the full Unraid-style command.
+
+- **Push to GHCR** so the Unraid template can pull the image (requires a GitHub Personal Access Token with `write:packages`):
+  ```bash
+  echo $GITHUB_TOKEN | docker login ghcr.io -u TRU5T --password-stdin
+  docker build -t ghcr.io/tru5t/plexdb-merge:latest .
+  docker push ghcr.io/tru5t/plexdb-merge:latest
+  ```
+  Or use [GitHub Actions](https://docs.github.com/en/actions/publishing-packages/publishing-docker-images) to build and push on release.
+
+**On Unraid**: **Docker** → **Add Container** → add a template repository `https://raw.githubusercontent.com/TRU5T/plexdb/main/docs/` (or copy `docs/plexdb-merge.xml` to `/boot/config/plugins/dockerMan/templates-user/`), then add the container from the **Plex DB Merge** template.
+
+Map the **Data** path to where your Plex DBs live (e.g. `/mnt/user/appdata/plexdb` or your Plex Databases folder). Open the Web UI and set **Start browse at** to `/data`.
 
 ## Run on Unraid
 
