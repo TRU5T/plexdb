@@ -771,7 +771,7 @@ INDEX_HTML = """<!DOCTYPE html>
 if __name__ == "__main__":
     import argparse as _ap
     _p = _ap.ArgumentParser(description="Plex DB Merge web UI")
-    _p.add_argument("--host", default="127.0.0.1", help="Bind address (use 0.0.0.0 to allow LAN access)")
+    _p.add_argument("--host", default="0.0.0.0", help="Bind address (use 127.0.0.1 for local-only)")
     _p.add_argument("--port", type=int, default=5000, help="Port (default 5000)")
     _args = _p.parse_args()
     app.run(host=_args.host, port=_args.port, debug=False, threaded=True)
