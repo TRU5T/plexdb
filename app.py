@@ -5,6 +5,8 @@ Then open http://127.0.0.1:5000 in your browser.
 """
 
 import os
+import sys
+import logging
 import threading
 from datetime import datetime
 from flask import Flask, render_template_string, request, jsonify
@@ -13,6 +15,16 @@ import plex_db_merge
 from plex_db_merge import run_merge, preview_merge
 
 app = Flask(__name__)
+
+# Log requests and errors to stdout so "docker logs" on Unraid shows what's happening
+logging.basicConfig(level=logging.INFO, stream=sys.stdout, format="%(message)s")
+app.logger.setLevel(logging.INFO)
+app.logger.handlers = []
+app.logger.addHandler(logging.StreamHandler(sys.stdout))
+werk = logging.getLogger("werkzeug")
+werk.setLevel(logging.INFO)
+werk.handlers = []
+werk.addHandler(logging.StreamHandler(sys.stdout))
 
 # Root path for the file browser (restricts browsing to this and below). Set BROWSE_ROOT env to override.
 BROWSE_ROOT = os.path.abspath(os.environ.get("BROWSE_ROOT", "/mnt"))
@@ -774,4 +786,9 @@ if __name__ == "__main__":
     _p.add_argument("--host", default="0.0.0.0", help="Bind address (use 127.0.0.1 for local-only)")
     _p.add_argument("--port", type=int, default=5000, help="Port (default 5000)")
     _args = _p.parse_args()
+    # Log to stdout so docker logs shows why it's not working (e.g. bind address, paths)
+    print(f"[Plex DB Merge] Starting: host={_args.host!r} port={_args.port} BROWSE_ROOT={BROWSE_ROOT!r}", flush=True)
+    print(f"[Plex DB Merge] If you cannot reach the UI, ensure host is 0.0.0.0 and the container port is mapped (e.g. -p 2000:5000).", flush=True)
+    sys.stdout.flush()
+    sys.stderr.flush()
     app.run(host=_args.host, port=_args.port, debug=False, threaded=True)
