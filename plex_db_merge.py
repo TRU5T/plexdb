@@ -45,7 +45,7 @@ def log(msg: str) -> None:
 
 
 def _normalize_path(path: str) -> str:
-    """Convert Windows paths to WSL/Linux paths when running on Linux (e.g. C:\\temp\\x -> /mnt/c/temp/x)."""
+    """Normalize path (strip, and convert Windows-style drive paths to Linux if on Linux)."""
     if not path or os.name == "nt":
         return path.strip()
     p = path.strip().replace("\\", "/")
@@ -318,6 +318,42 @@ def try_open_db(path: str, skip_integrity_check: bool = True) -> sqlite3.Connect
         return None
 
 
+def run_vacuum(path: str) -> tuple[bool, str | None]:
+    """
+    Run VACUUM on the database to reclaim space and defragment.
+    Requires exclusive access (e.g. stop Radarr/Plex first).
+    Returns (success, error_message).
+    """
+    path = _normalize_path(path)
+    if not os.path.isfile(path):
+        return False, f"File not found: {path}"
+    try:
+        conn = sqlite3.connect(path)
+        conn.execute("VACUUM")
+        conn.close()
+        return True, None
+    except Exception as e:
+        return False, str(e)
+
+
+def run_reindex(path: str) -> tuple[bool, str | None]:
+    """
+    Run REINDEX on the database to rebuild indexes.
+    Requires exclusive access (e.g. stop Radarr/Plex first).
+    Returns (success, error_message).
+    """
+    path = _normalize_path(path)
+    if not os.path.isfile(path):
+        return False, f"File not found: {path}"
+    try:
+        conn = sqlite3.connect(path)
+        conn.execute("REINDEX")
+        conn.close()
+        return True, None
+    except Exception as e:
+        return False, str(e)
+
+
 def run_pragma_integrity_check(
     path: str,
 ) -> tuple[bool, list[str] | None, str | None]:
@@ -350,6 +386,41 @@ def run_pragma_integrity_check(
     if len(messages) == 1 and messages[0].lower() == "ok":
         return True, messages, None
     return False, messages, None
+
+
+def _recovery_tmpdir(out_path: str | None = None) -> str | None:
+    """Directory for recovery temp files (large .sql dump). Prefer output file's dir (same disk, usually has space)."""
+    if out_path:
+        out_dir = os.path.dirname(os.path.abspath(out_path))
+        if out_dir and os.path.isdir(out_dir) and os.access(out_dir, os.W_OK):
+            return out_dir
+    for var in ("PLEXDB_TMPDIR", "TMPDIR"):
+        d = os.environ.get(var)
+        if d and os.path.isdir(d):
+            return d
+    return None
+
+
+def _cleanup_old_recovery_sql(dir_path: str, max_age_seconds: int = 3600) -> int:
+    """Remove old .sql files in dir_path (leftover from previous recovery). Returns count removed."""
+    if not dir_path or not os.path.isdir(dir_path):
+        return 0
+    now = time.time()
+    removed = 0
+    try:
+        for name in os.listdir(dir_path):
+            if not name.endswith(".sql"):
+                continue
+            full = os.path.join(dir_path, name)
+            try:
+                if os.path.isfile(full) and (now - os.path.getmtime(full)) > max_age_seconds:
+                    os.unlink(full)
+                    removed += 1
+            except OSError:
+                pass
+    except OSError:
+        pass
+    return removed
 
 
 def _sqlite3_cmd() -> list[str]:
@@ -457,8 +528,14 @@ def _import_sql_skipping_errors(sql_path: str, out_path: str) -> bool:
 def recover_db(path: str, out_path: str) -> bool:
     """Salvage data into out_path using .recover or, if unavailable, .dump. Returns True on success."""
     sqlite3_cmd = _sqlite3_cmd()
+    tmpdir = _recovery_tmpdir(out_path)
+    if tmpdir:
+        log(f"Using temp directory for recovery: {tmpdir}")
+        n = _cleanup_old_recovery_sql(tmpdir)
+        if n:
+            log(f"Freed space: removed {n} old recovery file(s).")
     try:
-        with tempfile.NamedTemporaryFile(suffix=".sql", delete=False) as f:
+        with tempfile.NamedTemporaryFile(suffix=".sql", delete=False, dir=tmpdir) as f:
             sql_path = f.name
         use_dump = False
         log("Running sqlite3 .recover (this may take 10–20 min for large DBs)…")
@@ -484,7 +561,7 @@ def recover_db(path: str, out_path: str) -> bool:
 
         if use_dump:
             os.unlink(sql_path)
-            with tempfile.NamedTemporaryFile(suffix=".sql", delete=False) as f:
+            with tempfile.NamedTemporaryFile(suffix=".sql", delete=False, dir=tmpdir) as f:
                 sql_path = f.name
             log("Running sqlite3 .dump…")
             with open(sql_path, "wb") as sql_file:

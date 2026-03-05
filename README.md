@@ -70,9 +70,11 @@ Then open **http://localhost:5000**. Set **Start browse at** to `/data` (or the 
 
 ### Unraid Docker template
 
-An Unraid XML template is in **`docs/plexdb-merge.xml`**. It uses **GitHub Container Registry** (`ghcr.io/tru5t/plexdb-merge`).
+An Unraid XML template is in **`docs/plexdb-merge.xml`**. It uses **GitHub Container Registry** (e.g. `ghcr.io/<owner>/plexdb-merge` for the repo owner).
 
-**If you get "Unable to find image" or "denied"**: the image is not on GHCR yet. Either build and run locally, or push the image first.
+**Publishing the image to GHCR:** On every push to `main`, the GitHub Action in `.github/workflows/docker-publish.yml` builds and pushes the image to `ghcr.io/<repo-owner>/plexdb-merge:latest`. No extra secrets are required (it uses the built-in `GITHUB_TOKEN`). After the first successful run, set the package to **Public** in the repo’s **Packages** if you want unauthenticated pulls.
+
+**If you get "Unable to find image" or "denied"**: Either the image hasn’t been built yet (push to `main` and check the **Actions** tab), or the package is private (make it public or log in to GHCR). To run without GHCR:
 
 - **Build and run locally** (same as Unraid run):
   ```bash
@@ -80,19 +82,29 @@ An Unraid XML template is in **`docs/plexdb-merge.xml`**. It uses **GitHub Conta
   docker build -t ghcr.io/tru5t/plexdb-merge:latest .
   docker run -d --name PlexDBMerge -p 2000:5000 -v /mnt/user/appdata/plexdb:/data ghcr.io/tru5t/plexdb-merge:latest
   ```
-  Then open **http://Tower:2000** (or your host IP). See **`docs/docker-run-example.sh`** for the full Unraid-style command.
+  Then open **http://Tower:2000** (or your host IP). Use your own GHCR owner in the image name if you built from a fork.
 
-- **Push to GHCR** so the Unraid template can pull the image (requires a GitHub Personal Access Token with `write:packages`):
-  ```bash
-  echo $GITHUB_TOKEN | docker login ghcr.io -u TRU5T --password-stdin
-  docker build -t ghcr.io/tru5t/plexdb-merge:latest .
-  docker push ghcr.io/tru5t/plexdb-merge:latest
-  ```
-  Or use [GitHub Actions](https://docs.github.com/en/actions/publishing-packages/publishing-docker-images) to build and push on release.
-
-**On Unraid**: **Docker** → **Add Container** → add a template repository `https://raw.githubusercontent.com/TRU5T/plexdb/main/docs/` (or copy `docs/plexdb-merge.xml` to `/boot/config/plugins/dockerMan/templates-user/`), then add the container from the **Plex DB Merge** template.
+**On Unraid**: **Docker** → **Add Container** → add a template repository (e.g. `https://raw.githubusercontent.com/TRU5T/plexdb/main/docs/` for the main repo, or your fork’s `docs/` URL), or copy `docs/plexdb-merge.xml` to `/boot/config/plugins/dockerMan/templates-user/`, then add the container from the **Plex DB Merge** template.
 
 Map the **Data** path to where your Plex DBs live (e.g. `/mnt/user/appdata/plexdb` or your Plex Databases folder). Open the Web UI and set **Start browse at** to `/data`.
+
+## Run on Ubuntu (or Linux VM) – data directory permissions
+
+If you run the app on an Ubuntu (or other Linux) VM and need to **upload or write files** to the data directory (e.g. `/mnt/user/appdata/plexdb`), fix ownership once:
+
+```bash
+cd /path/to/plexdb
+chmod +x scripts/fix-data-permissions.sh
+./scripts/fix-data-permissions.sh /mnt/user/appdata/plexdb
+```
+
+That script creates the directory if needed and sets ownership to your user so the app and your uploads can write there. Use a different path if your data lives elsewhere:
+
+```bash
+./scripts/fix-data-permissions.sh /path/to/your/plexdb/data
+```
+
+Then start the app as that same user (e.g. `BROWSE_ROOT=/mnt/user/appdata/plexdb .venv/bin/python app.py --host 0.0.0.0 --port 5000`).
 
 ## Run on Unraid
 
@@ -204,7 +216,7 @@ Run the app **on the Unraid server** so the file browser can see `/mnt/user` and
 - **Plex SQLite**: Official repair uses Plex’s custom SQLite. This script uses the standard Python `sqlite3` and the system `sqlite3` CLI for `.recover`. The merged DB should still be loadable by Plex; if you see schema or version issues, try the official repair/replace flow first.
 - **Blobs DB**: Only the main library DB (`com.plexapp.plugins.library.db`) is merged. The blobs DB is not touched; keep your existing (good) blobs DB if you have one.
 - **Recovery**: `.recover` can lose or alter data. Prefer using a backup from “before” corruption when possible.
-- **Disk full during recovery**: Recovery writes a large temp SQL file (often as big as the DB or larger). If you see “database or disk is full”, free space on the drive that holds `/tmp` (or set `TMPDIR` to a path on a bigger drive, e.g. `TMPDIR=/mnt/user/tmp python app.py`).
+- **Disk full during recovery**: Recovery writes a large temp SQL file (often as big as the DB or larger). If you see “database or disk is full”, the default temp dir (e.g. `/tmp`) is full or on a small partition. Set **`PLEXDB_TMPDIR`** (or **`TMPDIR`**) to a directory on a drive with enough free space, then restart the app and run Repair again. Example: `PLEXDB_TMPDIR=/mnt/user/tmp python app.py` or `export PLEXDB_TMPDIR=/path/to/large/disk/tmp`.
 - **Testing**: Prefer testing with copies of the DBs (e.g. in a temp folder) before replacing the live file.
 
 ## Where is the Plex DB?

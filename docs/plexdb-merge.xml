@@ -13,7 +13,7 @@
   <WebUI>http://[IP]:[PORT:5000]/</WebUI>
   <Icon>https://raw.githubusercontent.com/TRU5T/plexdb/main/docs/icon.png</Icon>
   <Config Name="WebUI Port" Target="5000" Default="5000" Mode="tcp" Description="Plex DB Merge web interface port." Type="Port" Display="always" Required="true" Mask="false">5000</Config>
-  <Config Name="Data Path" Target="/data" Default="/mnt/user/appdata/plexdb" Mode="rw" Description="Path to folder containing your Plex DBs. Set Start browse at to /data in the UI." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/plexdb</Config>
-  <Config Name="PUID" Target="PUID" Default="99" Mode="" Description="Run container as this user ID (Unraid default 99)." Type="Variable" Display="advanced" Required="false" Mask="false">99</Config>
-  <Config Name="PGID" Target="PGID" Default="100" Mode="" Description="Run container as this group ID (Unraid default 100)." Type="Variable" Display="advanced" Required="false" Mask="false">100</Config>
+  <Config Name="Data Path" Target="/data" Default="/mnt/user/appdata/plexdb" Mode="rw" Description="Path to folder containing your Plex DBs. On start, the container sets ownership to PUID:PGID so the app and your uploads can write. Set Start browse at to /data in the UI." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/plexdb</Config>
+  <Config Name="PUID" Target="PUID" Default="99" Mode="" Description="User ID for /data ownership and running the app (Unraid default 99 = nobody)." Type="Variable" Display="advanced" Required="false" Mask="false">99</Config>
+  <Config Name="PGID" Target="PGID" Default="100" Mode="" Description="Group ID for /data ownership (Unraid default 100 = users)." Type="Variable" Display="advanced" Required="false" Mask="false">100</Config>
 </Container>

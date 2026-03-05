@@ -3,28 +3,30 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install unzip for sqlite tools; optional curl/wget for download
+# Install sqlite3 CLI, gosu (for PUID/PGID), plus curl/unzip
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    sqlite3 \
+    gosu \
     unzip \
     curl \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && gosu nobody true
 
 # App and deps
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY app.py plex_db_merge.py ./
-RUN mkdir -p bin
-# Bundle sqlite3 (Linux x64) for .recover; or copy repo bin/ before this and comment out next RUN
-ARG SQLITE_TOOLS_URL=https://www.sqlite.org/2026/sqlite-tools-linux-x64-3510200.zip
-RUN curl -fsSLo /tmp/sqlite.zip "${SQLITE_TOOLS_URL}" \
-    && unzip -j -o /tmp/sqlite.zip "sqlite-tools-linux-x64-3510200/sqlite3" -d /app/bin \
-    && chmod +x /app/bin/sqlite3 \
-    && rm /tmp/sqlite.zip \
-    || true
+
+# Entrypoint: ensure /data exists and is owned by PUID:PGID, then run app as that user
+COPY docker-entrypoint.sh /docker-entrypoint.sh
+RUN chmod +x /docker-entrypoint.sh
 
 EXPOSE 5000
 
 ENV BROWSE_ROOT=/data
+ENV PUID=99
+ENV PGID=100
 VOLUME /data
 
+ENTRYPOINT ["/docker-entrypoint.sh"]
 CMD ["python", "app.py"]

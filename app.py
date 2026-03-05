@@ -12,7 +12,14 @@ from datetime import datetime
 from flask import Flask, render_template_string, request, jsonify
 
 import plex_db_merge
-from plex_db_merge import run_merge, preview_merge, run_pragma_integrity_check
+from plex_db_merge import (
+    run_merge,
+    preview_merge,
+    run_pragma_integrity_check,
+    run_vacuum,
+    run_reindex,
+    recover_db,
+)
 
 app = Flask(__name__)
 
@@ -33,6 +40,8 @@ BROWSE_ROOT = os.path.abspath(os.environ.get("BROWSE_ROOT", "/mnt"))
 _state = {"status": "idle", "log": [], "success": False, "error": None, "log_path": None}
 # Compare (preview) job state - runs in background so the request doesn't time out
 _compare_state = {"status": "idle", "log": [], "stats": None, "error": None, "log_path": None}
+# Radarr repair job state (single repair at a time)
+_radarr_state = {"status": "idle", "log": [], "success": False, "error": None, "log_path": None}
 _lock = threading.Lock()
 
 
@@ -59,6 +68,18 @@ def _append_compare_log(msg: str) -> None:
     with _lock:
         _compare_state["log"].append(msg)
         f = _compare_state.get("log_file")
+        if f:
+            try:
+                f.write(msg + "\n")
+                f.flush()
+            except OSError:
+                pass
+
+
+def _append_radarr_log(msg: str) -> None:
+    with _lock:
+        _radarr_state["log"].append(msg)
+        f = _radarr_state.get("log_file")
         if f:
             try:
                 f.write(msg + "\n")
@@ -227,6 +248,117 @@ def integrity_check():
     }
     # Always 200 so the UI can display detailed messages, even when there are errors.
     return jsonify(resp)
+
+
+# ---------- Radarr DB repair (inspired by DBRepair) ----------
+
+@app.route("/radarr/check", methods=["POST"])
+def radarr_check():
+    """Run integrity_check on Radarr DB path."""
+    data = request.get_json() or {}
+    path = (data.get("path") or "").strip()
+    if not path:
+        return jsonify({"ok": False, "error": "Path is required."}), 400
+    ok_ic, messages_ic, err_ic = run_pragma_integrity_check(path)
+    return jsonify({
+        "ok": bool(ok_ic),
+        "messages": messages_ic or [],
+        "error": err_ic,
+    })
+
+
+@app.route("/radarr/repair", methods=["POST"])
+def radarr_repair():
+    """Start Radarr DB repair (recover) in background. Writes to output_path."""
+    data = request.get_json() or {}
+    path = (data.get("path") or "").strip()
+    output_path = (data.get("output_path") or "").strip()
+    if not path:
+        return jsonify({"ok": False, "error": "Path is required."}), 400
+    if not output_path:
+        return jsonify({"ok": False, "error": "Output path is required."}), 400
+    with _lock:
+        if _radarr_state["status"] == "running":
+            return jsonify({"ok": False, "error": "A Radarr repair is already running."}), 400
+        _radarr_state["status"] = "running"
+        _radarr_state["log"] = []
+        _radarr_state["success"] = False
+        _radarr_state["error"] = None
+        _radarr_state["log_path"] = None
+        log_path = _log_file_path("radarr_repair")
+        try:
+            _radarr_state["log_file"] = open(log_path, "w")
+            _radarr_state["log_path"] = log_path
+        except OSError:
+            _radarr_state["log_file"] = None
+
+    def do_repair():
+        try:
+            plex_db_merge._log_callback = _append_radarr_log
+            try:
+                success = recover_db(path, output_path)
+                with _lock:
+                    _radarr_state["status"] = "done"
+                    _radarr_state["success"] = success
+                    _radarr_state["error"] = None if success else "Recovery failed. See log."
+            finally:
+                plex_db_merge._log_callback = None
+        except Exception as e:
+            with _lock:
+                _radarr_state["status"] = "done"
+                _radarr_state["success"] = False
+                _radarr_state["error"] = str(e)
+        finally:
+            with _lock:
+                if _radarr_state.get("log_file"):
+                    try:
+                        _radarr_state["log_file"].close()
+                    except OSError:
+                        pass
+                    _radarr_state["log_file"] = None
+
+    thread = threading.Thread(target=do_repair)
+    thread.start()
+    return jsonify({"ok": True})
+
+
+@app.route("/radarr/status")
+def radarr_status():
+    """Poll Radarr repair job status."""
+    with _lock:
+        return jsonify({
+            "status": _radarr_state["status"],
+            "log": _radarr_state["log"].copy(),
+            "success": _radarr_state["success"],
+            "error": _radarr_state["error"],
+            "log_path": _radarr_state.get("log_path"),
+        })
+
+
+@app.route("/radarr/vacuum", methods=["POST"])
+def radarr_vacuum():
+    """Run VACUUM on Radarr DB. Stop Radarr first."""
+    data = request.get_json() or {}
+    path = (data.get("path") or "").strip()
+    if not path:
+        return jsonify({"ok": False, "error": "Path is required."}), 400
+    success, err = run_vacuum(path)
+    if success:
+        return jsonify({"ok": True, "message": "VACUUM completed."})
+    return jsonify({"ok": False, "error": err or "VACUUM failed."})
+
+
+@app.route("/radarr/reindex", methods=["POST"])
+def radarr_reindex():
+    """Run REINDEX on Radarr DB. Stop Radarr first."""
+    data = request.get_json() or {}
+    path = (data.get("path") or "").strip()
+    if not path:
+        return jsonify({"ok": False, "error": "Path is required."}), 400
+    success, err = run_reindex(path)
+    if success:
+        return jsonify({"ok": True, "message": "REINDEX completed."})
+    return jsonify({"ok": False, "error": err or "REINDEX failed."})
 
 
 @app.route("/browse_root")
@@ -406,6 +538,7 @@ INDEX_HTML = """<!DOCTYPE html>
     .status-done { color: var(--success); }
     .status-done.err { color: var(--danger); }
     .message { margin-top: 0.5rem; font-size: 0.9rem; }
+    code { background: var(--bg); padding: 0.15rem 0.4rem; border-radius: 4px; font-size: 0.9em; }
     .path-row { display: flex; gap: 0.5rem; margin-bottom: 1rem; align-items: center; }
     .path-row input { flex: 1; margin-bottom: 0; }
     .btn-browse {
@@ -516,6 +649,30 @@ INDEX_HTML = """<!DOCTYPE html>
     </div>
 
     <div class="card">
+      <h2 style="font-size: 1.1rem; margin: 0 0 0.75rem 0;">Radarr DB Repair</h2>
+      <p class="sub" style="margin-bottom: 1rem;">Check, recover, vacuum, or reindex a Radarr SQLite DB (e.g. <code>radarr.db</code> or <code>com.radarr.db</code>). Stop Radarr before repair, vacuum, or reindex.</p>
+      <label for="radarr_path">Radarr DB path</label>
+      <div class="path-row">
+        <input type="text" id="radarr_path" placeholder="e.g. /mnt/user/appdata/Radarr/radarr.db">
+        <button type="button" class="btn-browse" data-target="radarr_path">Browse</button>
+      </div>
+      <label for="radarr_output_path">Output path (for Repair only)</label>
+      <div class="path-row">
+        <input type="text" id="radarr_output_path" placeholder="e.g. /mnt/user/appdata/Radarr/radarr-repaired.db">
+        <button type="button" class="btn-browse" data-target="radarr_output_path">Browse</button>
+      </div>
+      <div style="display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.75rem;">
+        <button type="button" class="btn-browse" id="radarrCheckBtn">Check</button>
+        <button type="button" class="btn" id="radarrRepairBtn">Repair</button>
+        <button type="button" class="btn-browse" id="radarrVacuumBtn">Vacuum</button>
+        <button type="button" class="btn-browse" id="radarrReindexBtn">Reindex</button>
+      </div>
+      <div id="radarrCheckResult" style="display: none; margin-top: 1rem; padding: 0.75rem; background: var(--bg); border-radius: 6px; font-size: 0.9rem;"></div>
+      <div id="radarrRepairStatus" class="status-idle" style="margin-top: 0.75rem;"></div>
+      <div class="log-box" id="radarrLogBox" style="margin-top: 0.5rem; min-height: 80px;"></div>
+    </div>
+
+    <div class="card">
       <div id="statusLine" class="status-idle">Idle</div>
       <div id="message" class="message" style="display:none;"></div>
       <div class="log-box" id="logBox"></div>
@@ -555,6 +712,7 @@ INDEX_HTML = """<!DOCTYPE html>
     const checkPath = document.getElementById('check_path');
     const checkBtn = document.getElementById('checkBtn');
     const checkResult = document.getElementById('checkResult');
+    // Plex "Check" elements may be missing; Radarr section has its own Check.
 
     let pollTimer = null;
     let browseTargetId = null;
@@ -795,56 +953,227 @@ INDEX_HTML = """<!DOCTYPE html>
         });
     });
 
-    checkBtn.addEventListener('click', () => {
-      let p = (checkPath.value || '').trim();
+    const radarrPath = document.getElementById('radarr_path');
+    const radarrOutputPath = document.getElementById('radarr_output_path');
+    const radarrCheckBtn = document.getElementById('radarrCheckBtn');
+    const radarrRepairBtn = document.getElementById('radarrRepairBtn');
+    const radarrVacuumBtn = document.getElementById('radarrVacuumBtn');
+    const radarrReindexBtn = document.getElementById('radarrReindexBtn');
+    const radarrCheckResult = document.getElementById('radarrCheckResult');
+    const radarrRepairStatus = document.getElementById('radarrRepairStatus');
+    const radarrLogBox = document.getElementById('radarrLogBox');
+
+    function showRadarrResult(html) {
+      radarrCheckResult.style.display = 'block';
+      radarrCheckResult.innerHTML = html;
+    }
+
+    radarrCheckBtn.addEventListener('click', () => {
+      const p = (radarrPath.value || '').trim();
       if (!p) {
-        // Fall back to other known paths if user left it empty
-        p = (outputPath.value || newPath.value || oldPath.value || '').trim();
-      }
-      if (!p) {
-        alert('Enter a DB path to check (or fill one of the Old/New/Output fields).');
+        alert('Enter Radarr DB path.');
         return;
       }
-      checkPath.value = p;
-      checkBtn.disabled = true;
-      checkResult.style.display = 'block';
-      checkResult.innerHTML = '<span class="sub">Running PRAGMA integrity_check…</span>';
-      fetch('/integrity_check', {
+      radarrCheckBtn.disabled = true;
+      showRadarrResult('<span class="sub">Running integrity_check…</span>');
+      fetch('/radarr/check', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: p })
       })
         .then(r => r.json())
         .then(d => {
-          checkBtn.disabled = false;
+          radarrCheckBtn.disabled = false;
           const msgs = d.messages || [];
           if (d.error && !msgs.length && !d.ok) {
-            checkResult.innerHTML = '<span style="color: var(--danger);">' + d.error + '</span>';
+            showRadarrResult('<span style="color: var(--danger);">' + (d.error || '') + '</span>');
             return;
           }
           if (d.ok && msgs.length === 1 && msgs[0].toLowerCase() === 'ok') {
-            checkResult.innerHTML = '<span style="color: var(--success);">integrity_check: OK</span>';
+            showRadarrResult('<span style="color: var(--success);">integrity_check: OK</span>');
             return;
           }
           let html = '';
-          if (d.error) {
-            html += '<span style="color: var(--danger);">' + d.error + '</span><br>';
-          }
+          if (d.error) html += '<span style="color: var(--danger);">' + d.error + '</span><br>';
           if (msgs.length) {
-            html += '<strong>integrity_check reported ' + msgs.length + ' issue(s):</strong><br>' +
-              '<pre class="sub" style="margin-top:0.5rem; white-space:pre-wrap; max-height:12rem; overflow:auto; border:1px solid var(--border); padding:0.5rem;">' +
-              msgs.join('\\n') + '</pre>';
+            html += '<strong>integrity_check reported ' + msgs.length + ' issue(s):</strong><br><pre class="sub" style="margin-top:0.5rem; white-space:pre-wrap; max-height:12rem; overflow:auto; border:1px solid var(--border); padding:0.5rem;">' + msgs.join('\\n') + '</pre>';
           }
-          if (!html) {
-            html = '<span class="sub">No output from integrity_check.</span>';
-          }
-          checkResult.innerHTML = html;
+          showRadarrResult(html || '<span class="sub">No output.</span>');
         })
         .catch(() => {
-          checkBtn.disabled = false;
-          checkResult.innerHTML = '<span style="color: var(--danger);">Request failed.</span>';
+          radarrCheckBtn.disabled = false;
+          showRadarrResult('<span style="color: var(--danger);">Request failed.</span>');
         });
     });
+
+    let radarrPollTimer = null;
+    function pollRadarrStatus() {
+      fetch('/radarr/status')
+        .then(r => r.json())
+        .then(d => {
+          radarrLogBox.textContent = (d.log || []).join('\\n');
+          radarrLogBox.scrollTop = radarrLogBox.scrollHeight;
+          if (d.status === 'running') {
+            radarrRepairStatus.textContent = 'Repair running…';
+            radarrRepairStatus.className = 'status-running';
+            radarrRepairBtn.disabled = true;
+            if (!radarrPollTimer) radarrPollTimer = setInterval(pollRadarrStatus, 500);
+            return;
+          }
+          if (radarrPollTimer) {
+            clearInterval(radarrPollTimer);
+            radarrPollTimer = null;
+          }
+          radarrRepairBtn.disabled = false;
+          if (d.status === 'done') {
+            if (d.success) {
+              radarrRepairStatus.textContent = 'Done';
+              radarrRepairStatus.className = 'status-done';
+              showRadarrResult('<span style="color: var(--success);">Repair completed. Stop Radarr, replace the DB file with the output file, then start Radarr.</span>' + (d.log_path ? '<br><span class="sub">Log: ' + d.log_path + '</span>' : ''));
+            } else {
+              radarrRepairStatus.textContent = 'Failed';
+              radarrRepairStatus.className = 'status-done err';
+              showRadarrResult('<span style="color: var(--danger);">' + (d.error || 'Repair failed.') + '</span>' + (d.log_path ? '<br><span class="sub">Log: ' + d.log_path + '</span>' : ''));
+            }
+          } else {
+            radarrRepairStatus.textContent = 'Idle';
+            radarrRepairStatus.className = 'status-idle';
+          }
+        })
+        .catch(() => {
+          if (radarrPollTimer) clearInterval(radarrPollTimer);
+          radarrPollTimer = null;
+          radarrRepairBtn.disabled = false;
+          radarrRepairStatus.textContent = 'Error';
+          radarrRepairStatus.className = 'status-done err';
+        });
+    }
+
+    radarrRepairBtn.addEventListener('click', () => {
+      const p = (radarrPath.value || '').trim();
+      const out = (radarrOutputPath.value || '').trim();
+      if (!p || !out) {
+        alert('Enter both Radarr DB path and Output path.');
+        return;
+      }
+      radarrCheckResult.style.display = 'block';
+      radarrLogBox.textContent = '';
+      radarrRepairStatus.textContent = 'Starting…';
+      radarrRepairStatus.className = 'status-running';
+      radarrRepairBtn.disabled = true;
+      fetch('/radarr/repair', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: p, output_path: out })
+      })
+        .then(r => r.json())
+        .then(d => {
+          if (!d.ok) {
+            alert(d.error || 'Failed to start repair.');
+            radarrRepairBtn.disabled = false;
+            radarrRepairStatus.className = 'status-idle';
+            return;
+          }
+          radarrPollTimer = setInterval(pollRadarrStatus, 500);
+          pollRadarrStatus();
+        })
+        .catch(() => {
+          alert('Request failed.');
+          radarrRepairBtn.disabled = false;
+          radarrRepairStatus.className = 'status-idle';
+        });
+    });
+
+    radarrVacuumBtn.addEventListener('click', () => {
+      const p = (radarrPath.value || '').trim();
+      if (!p) {
+        alert('Enter Radarr DB path.');
+        return;
+      }
+      radarrVacuumBtn.disabled = true;
+      showRadarrResult('<span class="sub">Running VACUUM… (stop Radarr first)</span>');
+      fetch('/radarr/vacuum', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: p })
+      })
+        .then(r => r.json())
+        .then(d => {
+          radarrVacuumBtn.disabled = false;
+          if (d.ok) showRadarrResult('<span style="color: var(--success);">' + (d.message || 'VACUUM completed.') + '</span>');
+          else showRadarrResult('<span style="color: var(--danger);">' + (d.error || 'VACUUM failed.') + '</span>');
+        })
+        .catch(() => {
+          radarrVacuumBtn.disabled = false;
+          showRadarrResult('<span style="color: var(--danger);">Request failed.</span>');
+        });
+    });
+
+    radarrReindexBtn.addEventListener('click', () => {
+      const p = (radarrPath.value || '').trim();
+      if (!p) {
+        alert('Enter Radarr DB path.');
+        return;
+      }
+      radarrReindexBtn.disabled = true;
+      showRadarrResult('<span class="sub">Running REINDEX… (stop Radarr first)</span>');
+      fetch('/radarr/reindex', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: p })
+      })
+        .then(r => r.json())
+        .then(d => {
+          radarrReindexBtn.disabled = false;
+          if (d.ok) showRadarrResult('<span style="color: var(--success);">' + (d.message || 'REINDEX completed.') + '</span>');
+          else showRadarrResult('<span style="color: var(--danger);">' + (d.error || 'REINDEX failed.') + '</span>');
+        })
+        .catch(() => {
+          radarrReindexBtn.disabled = false;
+          showRadarrResult('<span style="color: var(--danger);">Request failed.</span>');
+        });
+    });
+
+    if (checkPath && checkBtn && checkResult) {
+      checkBtn.addEventListener('click', () => {
+        let p = (checkPath.value || '').trim();
+        if (!p) p = (outputPath.value || newPath.value || oldPath.value || '').trim();
+        if (!p) {
+          alert('Enter a DB path to check (or fill one of the Old/New/Output fields).');
+          return;
+        }
+        checkPath.value = p;
+        checkBtn.disabled = true;
+        checkResult.style.display = 'block';
+        checkResult.innerHTML = '<span class="sub">Running PRAGMA integrity_check…</span>';
+        fetch('/integrity_check', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: p })
+        })
+          .then(r => r.json())
+          .then(d => {
+            checkBtn.disabled = false;
+            const msgs = d.messages || [];
+            if (d.error && !msgs.length && !d.ok) {
+              checkResult.innerHTML = '<span style="color: var(--danger);">' + d.error + '</span>';
+              return;
+            }
+            if (d.ok && msgs.length === 1 && msgs[0].toLowerCase() === 'ok') {
+              checkResult.innerHTML = '<span style="color: var(--success);">integrity_check: OK</span>';
+              return;
+            }
+            let html = '';
+            if (d.error) html += '<span style="color: var(--danger);">' + d.error + '</span><br>';
+            if (msgs.length) html += '<strong>integrity_check reported ' + msgs.length + ' issue(s):</strong><br><pre class="sub" style="margin-top:0.5rem; white-space:pre-wrap; max-height:12rem; overflow:auto; border:1px solid var(--border); padding:0.5rem;">' + msgs.join('\\n') + '</pre>';
+            checkResult.innerHTML = html || '<span class="sub">No output from integrity_check.</span>';
+          })
+          .catch(() => {
+            checkBtn.disabled = false;
+            checkResult.innerHTML = '<span style="color: var(--danger);">Request failed.</span>';
+          });
+      });
+    }
   </script>
 </body>
 </html>
