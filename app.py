@@ -807,13 +807,27 @@ INDEX_HTML = """<!DOCTYPE html>
             const logNote = d.log_path ? '<br><span class="sub">Log saved to: ' + d.log_path + '</span>' : '';
             if (d.success && d.stats) {
               const s = d.stats;
-              compareResult.innerHTML = '<strong>What will be merged (preview):</strong><br>' +
+              compareResult.innerHTML =
+                '<strong>What will be merged (preview):</strong><br>' +
                 '• Watch history entries to add: ' + s.views_to_add + '<br>' +
                 '• Per-item settings to add: ' + s.settings_to_add + '<br>' +
-                (s.new_metadata_items_to_add > 0 ? '• New library items to copy: ' + s.new_metadata_items_to_add + ' (with "Also copy new library items" enabled)<br>' : '') +
-                '<span class="sub">Run merge to apply. After merging, replace the Plex DB with the output file (see steps below when done).</span>' + logNote;
+                (typeof s.old_views_total === 'number' && typeof s.new_views_total === 'number'
+                  ? '• Watch rows (old → new): ' + s.old_views_total + ' → ' + s.new_views_total + '<br>'
+                  : '') +
+                (typeof s.old_settings_total === 'number' && typeof s.new_settings_total === 'number'
+                  ? '• Settings rows (old → new): ' + s.old_settings_total + ' → ' + s.new_settings_total + '<br>'
+                  : '') +
+                (s.new_metadata_items_to_add > 0
+                  ? '• New library items to copy: ' + s.new_metadata_items_to_add + ' (with "Also copy new library items" enabled)<br>'
+                  : '') +
+                '<span class="sub">Run merge to apply. After merging, replace the Plex DB with the output file (see steps below when done).</span>' +
+                logNote;
             } else {
-              compareResult.innerHTML = '<span style="color: var(--danger);">' + (d.error || 'Preview failed') + '</span>' + (d.log_path ? '<br><span class="sub">Log saved to: ' + d.log_path + '</span>' : '');
+              compareResult.innerHTML =
+                '<span style="color: var(--danger);">' +
+                (d.error || 'Preview failed') +
+                '</span>' +
+                (d.log_path ? '<br><span class="sub">Log saved to: ' + d.log_path + '</span>' : '');
             }
           } else {
             compareResult.innerHTML = '<span class="sub">Idle.</span>';

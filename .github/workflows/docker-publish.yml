@@ -1,5 +1,12 @@
 # Build and push Docker image to GitHub Container Registry (GHCR)
 # Runs on every push to main. Image: ghcr.io/<repo-owner>/plexdb-merge:latest
+#
+# If you get "permission_denied: write_package" (e.g. repo in an org with restricted tokens):
+# 1. Create a PAT: GitHub → Settings → Developer settings → Personal access tokens →
+#    Fine-grained (or Classic) with scope "write:packages". If the repo is in an org with SSO,
+#    authorize the token for that org.
+# 2. Add repo secret: GHCR_TOKEN = the PAT.
+# The workflow uses GHCR_TOKEN when set, otherwise GITHUB_TOKEN.
 
 name: Publish Docker image
 
@@ -27,7 +34,7 @@ jobs:
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.repository_owner }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          password: ${{ secrets.GHCR_TOKEN || secrets.GITHUB_TOKEN }}
 
       - name: Extract metadata (tags, labels)
         id: meta

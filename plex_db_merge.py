@@ -178,7 +178,16 @@ def preview_merge(
     Returns (success, error_message, stats_dict).
     stats_dict: views_to_add, settings_to_add, new_metadata_items_to_add (0 if not merge_new_items).
     """
-    stats = {"views_to_add": 0, "settings_to_add": 0, "new_metadata_items_to_add": 0}
+    stats = {
+        "views_to_add": 0,
+        "settings_to_add": 0,
+        "new_metadata_items_to_add": 0,
+        # Totals in each DB for sanity-checking
+        "old_views_total": 0,
+        "new_views_total": 0,
+        "old_settings_total": 0,
+        "new_settings_total": 0,
+    }
     old_path = _normalize_path(old_path)
     new_path = _normalize_path(new_path)
     log("Starting preview…")
@@ -200,6 +209,16 @@ def preview_merge(
                 os.unlink(recovered_old_path)
             return False, "Cannot open old (backup) DB. Install sqlite3 CLI (apt install sqlite3) and try again.", stats
     log("Old DB open.")
+    # Count baseline rows for sanity-checking
+    try:
+        if table_exists(old_conn, "metadata_item_views"):
+            r = old_conn.execute("SELECT COUNT(*) FROM metadata_item_views").fetchone()
+            stats["old_views_total"] = int(r[0]) if r and r[0] is not None else 0
+        if table_exists(old_conn, "metadata_item_settings"):
+            r = old_conn.execute("SELECT COUNT(*) FROM metadata_item_settings").fetchone()
+            stats["old_settings_total"] = int(r[0]) if r and r[0] is not None else 0
+    except sqlite3.Error as e:
+        log(f"Warning: failed to count rows in old DB: {e}")
     recovered_path = None
     log("Opening new/corrupt DB…")
     new_conn = try_open_db(new_path)
@@ -220,6 +239,15 @@ def preview_merge(
             os.unlink(recovered_path)
         return False, "Cannot open new (corrupt) DB. Enable 'Try to recover corrupt DB' and try again.", stats
     log("New DB open. Counting watch history and settings…")
+    try:
+        if table_exists(new_conn, "metadata_item_views"):
+            r = new_conn.execute("SELECT COUNT(*) FROM metadata_item_views").fetchone()
+            stats["new_views_total"] = int(r[0]) if r and r[0] is not None else 0
+        if table_exists(new_conn, "metadata_item_settings"):
+            r = new_conn.execute("SELECT COUNT(*) FROM metadata_item_settings").fetchone()
+            stats["new_settings_total"] = int(r[0]) if r and r[0] is not None else 0
+    except sqlite3.Error as e:
+        log(f"Warning: failed to count rows in new DB: {e}")
 
     def _count_stats(o_conn, n_conn):
         if not table_exists(o_conn, "metadata_items"):
