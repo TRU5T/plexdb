@@ -677,17 +677,19 @@ def merge_watch_history_and_settings(
 
     # --- metadata_item_views ---
     if table_exists(new_conn, "metadata_item_views") and table_exists(out_conn, "metadata_item_views"):
-        cols = get_table_columns(new_conn, "metadata_item_views")
+        new_cols = get_table_columns(new_conn, "metadata_item_views")
+        out_cols = get_table_columns(out_conn, "metadata_item_views")
         out_cur = out_conn.cursor()
+
         # Newer schema: metadata_item_views already has guid column we can match on directly.
-        if "guid" in cols:
+        if "guid" in new_cols:
             cur = new_conn.execute(
                 "SELECT account_id, guid, metadata_type, library_section_id, grandparent_title, "
                 "parent_index, parent_title, [index], title, thumb_url, viewed_at, grandparent_guid, "
                 "originally_available_at, device_id FROM metadata_item_views"
             )
         # Older schema: no guid column; join via metadata_item_id -> metadata_items.guid.
-        elif "metadata_item_id" in cols and table_exists(new_conn, "metadata_items"):
+        elif "metadata_item_id" in new_cols and table_exists(new_conn, "metadata_items"):
             log("metadata_item_views has no guid column; joining via metadata_item_id → metadata_items.guid.")
             cur = new_conn.execute(
                 "SELECT v.account_id, m.guid, v.metadata_type, v.library_section_id, v.grandparent_title, "
@@ -702,24 +704,51 @@ def merge_watch_history_and_settings(
             cur = None
 
         if cur is not None:
-            for row in cur.fetchall():
-                guid = row[1]
-                old_id = guid_to_id_old.get(guid)
-                if old_id is None:
-                    continue
-                try:
-                    out_cur.execute(
-                        "INSERT OR IGNORE INTO metadata_item_views "
-                        "(account_id, guid, metadata_type, library_section_id, grandparent_title, "
-                        "parent_index, parent_title, [index], title, thumb_url, viewed_at, grandparent_guid, "
-                        "originally_available_at, device_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                        (row[0], guid, row[2], row[3], row[4], row[5], row[6], row[7], row[8], row[9], row[10], row[11], row[12], row[13]),
-                    )
-                    if out_cur.rowcount:
-                        views_added += 1
-                except sqlite3.IntegrityError:
-                    pass
-            out_conn.commit()
+            # Map desired columns to indices in the SELECT row; then only insert those
+            # that actually exist in the destination table to avoid "N values for M columns".
+            desired = [
+                ("account_id", 0),
+                ("guid", 1),
+                ("metadata_type", 2),
+                ("library_section_id", 3),
+                ("grandparent_title", 4),
+                ("parent_index", 5),
+                ("parent_title", 6),
+                ("[index]", 7),
+                ("title", 8),
+                ("thumb_url", 9),
+                ("viewed_at", 10),
+                ("grandparent_guid", 11),
+                ("originally_available_at", 12),
+                ("device_id", 13),
+            ]
+            # Normalise column names for comparison (strip [] for index)
+            def _norm(name: str) -> str:
+                return "index" if name == "[index]" else name
+
+            present = [(col, idx) for (col, idx) in desired if _norm(col) in out_cols]
+            if not present:
+                log("metadata_item_views merge: no overlapping columns between source and destination, skipping.")
+            else:
+                col_list = ", ".join(col for (col, _) in present)
+                placeholders = ", ".join("?" for _ in present)
+                sql = (
+                    "INSERT OR IGNORE INTO metadata_item_views "
+                    f"({col_list}) VALUES ({placeholders})"
+                )
+                for row in cur.fetchall():
+                    guid = row[1]
+                    old_id = guid_to_id_old.get(guid)
+                    if old_id is None:
+                        continue
+                    try:
+                        values = tuple(row[idx] for (_, idx) in present)
+                        out_cur.execute(sql, values)
+                        if out_cur.rowcount:
+                            views_added += 1
+                    except sqlite3.IntegrityError:
+                        pass
+                out_conn.commit()
 
     # --- metadata_item_settings ---
     if table_exists(new_conn, "metadata_item_settings") and table_exists(out_conn, "metadata_item_settings"):
