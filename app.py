@@ -21,6 +21,8 @@ from plex_db_merge import (
     recover_db,
 )
 
+APP_VERSION = os.environ.get("PLEXDB_MERGE_VERSION", "v0.1")
+
 app = Flask(__name__)
 
 # Log requests and errors to stdout so "docker logs" on Unraid shows what's happening
@@ -106,7 +108,7 @@ def _append_radarr_log(msg: str) -> None:
 
 @app.route("/")
 def index():
-    return render_template_string(INDEX_HTML)
+    return render_template_string(INDEX_HTML, version=APP_VERSION)
 
 
 @app.route("/run", methods=["POST"])
@@ -621,7 +623,10 @@ INDEX_HTML = """<!DOCTYPE html>
 </head>
 <body>
   <div class="container">
-    <h1>Plex DB Merge</h1>
+    <h1>
+      Plex DB Merge
+      <span class="sub" style="float:right; font-size:0.8rem; opacity:0.8;">{{ version }}</span>
+    </h1>
     <p class="sub">Use an old (good) backup as base, merge in data from a newer or corrupt DB.</p>
 
     <div class="card">
