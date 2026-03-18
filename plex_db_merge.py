@@ -404,7 +404,13 @@ def run_pragma_integrity_check(
         cur = conn.execute("PRAGMA integrity_check")
         rows = cur.fetchall()
     except Exception as e:
-        return False, None, f"Integrity check failed: {e}"
+        msg = str(e)
+        # Plex uses custom FTS tokenizers (e.g. "collating") that vanilla sqlite3
+        # does not know about. Treat those as a warning rather than a hard error,
+        # since Plex itself will still be able to open and use the DB.
+        if "unknown tokenizer" in msg.lower():
+            return False, None, f"Integrity check skipped due to custom tokenizer: {msg}"
+        return False, None, f"Integrity check failed: {msg}"
     finally:
         conn.close()
 
@@ -672,15 +678,30 @@ def merge_watch_history_and_settings(
     # --- metadata_item_views ---
     if table_exists(new_conn, "metadata_item_views") and table_exists(out_conn, "metadata_item_views"):
         cols = get_table_columns(new_conn, "metadata_item_views")
-        if "guid" not in cols or "metadata_item_id" not in cols:
-            log("metadata_item_views missing guid or metadata_item_id, skipping.")
-        else:
+        out_cur = out_conn.cursor()
+        # Newer schema: metadata_item_views already has guid column we can match on directly.
+        if "guid" in cols:
             cur = new_conn.execute(
                 "SELECT account_id, guid, metadata_type, library_section_id, grandparent_title, "
                 "parent_index, parent_title, [index], title, thumb_url, viewed_at, grandparent_guid, "
                 "originally_available_at, device_id FROM metadata_item_views"
             )
-            out_cur = out_conn.cursor()
+        # Older schema: no guid column; join via metadata_item_id -> metadata_items.guid.
+        elif "metadata_item_id" in cols and table_exists(new_conn, "metadata_items"):
+            log("metadata_item_views has no guid column; joining via metadata_item_id → metadata_items.guid.")
+            cur = new_conn.execute(
+                "SELECT v.account_id, m.guid, v.metadata_type, v.library_section_id, v.grandparent_title, "
+                "v.parent_index, v.parent_title, v.[index], v.title, v.thumb_url, v.viewed_at, v.grandparent_guid, "
+                "v.originally_available_at, v.device_id "
+                "FROM metadata_item_views v "
+                "JOIN metadata_items m ON v.metadata_item_id = m.id "
+                "WHERE m.guid IS NOT NULL AND m.guid != ''"
+            )
+        else:
+            log("metadata_item_views missing guid and metadata_item_id, skipping views merge.")
+            cur = None
+
+        if cur is not None:
             for row in cur.fetchall():
                 guid = row[1]
                 old_id = guid_to_id_old.get(guid)
