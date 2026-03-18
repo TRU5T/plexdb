@@ -46,10 +46,26 @@ _lock = threading.Lock()
 
 
 def _log_file_path(prefix: str) -> str:
-    """Path for a timestamped log file in the logs/ directory (under cwd)."""
-    log_dir = os.path.join(os.getcwd(), "logs")
-    os.makedirs(log_dir, exist_ok=True)
-    return os.path.join(log_dir, f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
+    """
+    Path for a timestamped log file.
+    Prefer ./logs but gracefully fall back to /tmp/plexdb-logs if not writable
+    (e.g. when running under a non-root UID in Docker).
+    """
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    # First try cwd/logs
+    primary = os.path.join(os.getcwd(), "logs")
+    try:
+        os.makedirs(primary, exist_ok=True)
+        return os.path.join(primary, f"{prefix}_{ts}.log")
+    except PermissionError:
+        # Fall back to /tmp, which is always writable inside the container
+        fallback = "/tmp/plexdb-logs"
+        try:
+            os.makedirs(fallback, exist_ok=True)
+        except PermissionError:
+            # Last resort: just use /tmp without a subdir
+            fallback = "/tmp"
+        return os.path.join(fallback, f"{prefix}_{ts}.log")
 
 
 def _append_log(msg: str) -> None:
