@@ -828,6 +828,23 @@ INDEX_HTML = """<!DOCTYPE html>
             const logNote = d.log_path ? '<br><span class="sub">Log saved to: ' + d.log_path + '</span>' : '';
             if (d.success && d.stats) {
               const s = d.stats;
+              const sampleRows = Array.isArray(s.watch_rows_to_add_preview) ? s.watch_rows_to_add_preview : [];
+              function htmlEscape(x) {
+                return (x === null || x === undefined) ? '' : String(x)
+                  .replace(/&/g, '&amp;')
+                  .replace(/</g, '&lt;')
+                  .replace(/>/g, '&gt;')
+                  .replace(/"/g, '&quot;')
+                  .replace(/'/g, '&#39;');
+              }
+              const sampleHtml = sampleRows.length
+                ? '<details style="margin-top:0.75rem;"><summary class="sub">Sample watch rows to add (' + sampleRows.length + ' shown)</summary>' +
+                  '<pre class="sub" style="margin-top:0.5rem; white-space:pre-wrap; font-size:0.8rem; max-height:12rem; overflow:auto; border:1px solid var(--border); padding:0.5rem;">' +
+                  sampleRows.map(r => {
+                      return (htmlEscape(r.viewed_at) + ' | ' + htmlEscape(r.title) + ' | ' + htmlEscape(r.guid));
+                  }).join('\n') +
+                  '</pre></details>'
+                : '';
               compareResult.innerHTML =
                 '<strong>What will be merged (preview):</strong><br>' +
                 '• Watch history entries to add: ' + s.views_to_add + '<br>' +
@@ -841,6 +858,7 @@ INDEX_HTML = """<!DOCTYPE html>
                 (s.new_metadata_items_to_add > 0
                   ? '• New library items to copy: ' + s.new_metadata_items_to_add + ' (with "Also copy new library items" enabled)<br>'
                   : '') +
+                sampleHtml +
                 '<span class="sub">Run merge to apply. After merging, replace the Plex DB with the output file (see steps below when done).</span>' +
                 logNote;
             } else {

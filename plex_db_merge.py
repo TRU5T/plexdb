@@ -182,6 +182,8 @@ def preview_merge(
         "views_to_add": 0,
         "settings_to_add": 0,
         "new_metadata_items_to_add": 0,
+        # Limited sample for the UI (so we can inspect what changed).
+        "watch_rows_to_add_preview": [],
         # Totals in each DB for sanity-checking
         "old_views_total": 0,
         "new_views_total": 0,
@@ -209,6 +211,8 @@ def preview_merge(
                 os.unlink(recovered_old_path)
             return False, "Cannot open old (backup) DB. Install sqlite3 CLI (apt install sqlite3) and try again.", stats
     log("Old DB open.")
+    # Effective on-disk path for attaching old DB later (handles recovery).
+    old_effective_path = recovered_old_path if recovered_old_path else old_path
     # Count baseline rows for sanity-checking
     try:
         if table_exists(old_conn, "metadata_item_views"):
@@ -239,6 +243,8 @@ def preview_merge(
             os.unlink(recovered_path)
         return False, "Cannot open new (corrupt) DB. Enable 'Try to recover corrupt DB' and try again.", stats
     log("New DB open. Counting watch history and settings…")
+    # Effective on-disk path for attaching old DB later (handles recovery).
+    new_effective_path = recovered_path if recovered_path else new_path
     try:
         if table_exists(new_conn, "metadata_item_views"):
             r = new_conn.execute("SELECT COUNT(*) FROM metadata_item_views").fetchone()
@@ -250,22 +256,129 @@ def preview_merge(
         log(f"Warning: failed to count rows in new DB: {e}")
 
     def _count_stats(o_conn, n_conn):
+        """
+        Compute preview stats and (optionally) a small sample of watch rows that
+        appear to be new.
+
+        Note: Plex DB schemas vary between versions. For "views_to_add" we prefer
+        sanity-based totals rather than fragile schema-specific row counting.
+        """
         if not table_exists(o_conn, "metadata_items"):
             return
-        cur = o_conn.execute("SELECT id, guid FROM metadata_items WHERE guid IS NOT NULL AND guid != ''")
+
+        # Build guid -> id map from old DB (used for mapping + filtering)
+        cur = o_conn.execute(
+            "SELECT id, guid FROM metadata_items WHERE guid IS NOT NULL AND guid != ''"
+        )
         guid_to_id_old = {row[1]: row[0] for row in cur.fetchall()}
-        if table_exists(n_conn, "metadata_item_views"):
-            cur = n_conn.execute("SELECT guid FROM metadata_item_views")
-            for row in cur.fetchall():
-                if row[0] and row[0] in guid_to_id_old:
-                    stats["views_to_add"] += 1
-        if table_exists(n_conn, "metadata_item_settings"):
-            cur = n_conn.execute("SELECT guid FROM metadata_item_settings")
-            for row in cur.fetchall():
-                if row[0] and row[0] in guid_to_id_old:
-                    stats["settings_to_add"] += 1
+
+        # Views/settings "to add" are best approximated by table growth
+        # (new older/ newer deltas are small in your case).
+        stats["views_to_add"] = max(0, stats.get("new_views_total", 0) - stats.get("old_views_total", 0))
+        stats["settings_to_add"] = max(0, stats.get("new_settings_total", 0) - stats.get("old_settings_total", 0))
+
+        # Sample watch rows that likely correspond to the rows Plex would insert.
+        # We do this by attaching the old DB to the new DB connection and then
+        # doing a NOT EXISTS match on a small key.
+        try:
+            if table_exists(n_conn, "metadata_item_views") and table_exists(o_conn, "metadata_item_views"):
+                old_view_cols = [c.lower() for c in get_table_columns(o_conn, "metadata_item_views")]
+                new_view_cols = [c.lower() for c in get_table_columns(n_conn, "metadata_item_views")]
+                if "guid" not in old_view_cols:
+                    raise RuntimeError("old metadata_item_views has no guid column; cannot build watch-row preview reliably")
+
+                # Key columns to identify view-row uniqueness (keep it small).
+                desired_key = ["account_id", "guid", "metadata_type", "library_section_id", "viewed_at", "device_id"]
+                key_cols = [c for c in desired_key if c in old_view_cols]
+                if "guid" not in key_cols:
+                    key_cols = ["guid"]
+
+                # Build derived table for new rows with guid available.
+                # We always output the same derived columns so the outer query is stable.
+                if "guid" in new_view_cols:
+                    n_from = "metadata_item_views v"
+                    guid_select = "v.guid AS guid"
+                    guid_join = None
+                elif "metadata_item_id" in new_view_cols and table_exists(n_conn, "metadata_items"):
+                    n_from = "metadata_item_views v JOIN metadata_items m ON v.metadata_item_id = m.id"
+                    guid_select = "m.guid AS guid"
+                    guid_join = True
+                else:
+                    n_from = None
+
+                if not n_from:
+                    raise RuntimeError("metadata_item_views schema unsupported for watch-row preview")
+
+                # Always select these derived columns (NULL if the column doesn't exist).
+                needed = ["account_id", "guid", "metadata_type", "library_section_id", "viewed_at", "device_id", "title", "parent_title", "grandparent_title"]
+                select_cols = []
+                for col in needed:
+                    if col == "guid":
+                        select_cols.append(guid_select)
+                    else:
+                        src = "v." + col if col in new_view_cols else "NULL"
+                        select_cols.append(f"{src} AS {col}")
+
+                # Attach old to run NOT EXISTS within a single SQL engine.
+                attach_name = "olddbt"
+                n_conn.execute(f"ATTACH DATABASE 'file:{old_effective_path}?mode=ro' AS {attach_name}")
+
+                # Build NOT EXISTS on key columns.
+                not_exists_sql = "1=1"
+                conds = []
+                for col in key_cols:
+                    conds.append(f"o.{col} IS n.{col}")
+                if conds:
+                    not_exists_sql = " AND ".join(conds)
+
+                # Candidate WHERE: only rows whose guid exists in old metadata_items
+                # and are not already present in old metadata_item_views.
+                guid_exists_sql = f"EXISTS (SELECT 1 FROM {attach_name}.metadata_items mi WHERE mi.guid = n.guid)"
+
+                order_sql = "n.viewed_at DESC" if "viewed_at" in new_view_cols else "n.guid"
+
+                n_select = "SELECT " + ", ".join(select_cols) + " FROM " + n_from
+                query = (
+                    "SELECT n.account_id, n.guid, n.metadata_type, n.library_section_id, "
+                    + "n.viewed_at, n.device_id, n.title, n.parent_title, n.grandparent_title "
+                    + "FROM ( " + n_select + " ) n "
+                    + "WHERE n.guid IS NOT NULL AND n.guid != '' "
+                    + "AND " + guid_exists_sql + " "
+                    + "AND NOT EXISTS ("
+                    + "SELECT 1 FROM " + attach_name + ".metadata_item_views o "
+                    + "WHERE " + not_exists_sql
+                    + ") "
+                    + "ORDER BY " + order_sql + " "
+                    + "LIMIT 50"
+                )
+
+                rows = n_conn.execute(query).fetchall()
+                try:
+                    n_conn.execute(f"DETACH DATABASE {attach_name}")
+                except Exception:
+                    pass
+
+                stats["watch_rows_to_add_preview"] = [
+                    {
+                        "account_id": r[0],
+                        "guid": r[1],
+                        "metadata_type": r[2],
+                        "library_section_id": r[3],
+                        "viewed_at": r[4],
+                        "device_id": r[5],
+                        "title": r[6],
+                        "parent_title": r[7],
+                        "grandparent_title": r[8],
+                    }
+                    for r in rows
+                ]
+        except Exception as e:
+            log(f"Warning: could not build watch row preview sample: {type(e).__name__}: {e}")
+
         if merge_new_items and table_exists(n_conn, "metadata_items"):
-            cur = n_conn.execute("SELECT guid FROM metadata_items WHERE guid IS NOT NULL AND guid != ''")
+            cur = n_conn.execute(
+                "SELECT guid FROM metadata_items WHERE guid IS NOT NULL AND guid != ''"
+            )
             new_guids = {row[0] for row in cur.fetchall()}
             stats["new_metadata_items_to_add"] = len(new_guids - set(guid_to_id_old.keys()))
 
