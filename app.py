@@ -842,7 +842,7 @@ INDEX_HTML = """<!DOCTYPE html>
                   '<pre class="sub" style="margin-top:0.5rem; white-space:pre-wrap; font-size:0.8rem; max-height:12rem; overflow:auto; border:1px solid var(--border); padding:0.5rem;">' +
                   sampleRows.map(r => {
                       return (htmlEscape(r.viewed_at) + ' | ' + htmlEscape(r.title) + ' | ' + htmlEscape(r.guid));
-                  }).join('\n') +
+                  }).join('\\n') +
                   '</pre></details>'
                 : '';
               compareResult.innerHTML =
