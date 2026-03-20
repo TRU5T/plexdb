@@ -8,12 +8,20 @@
   <Support>https://github.com/TRU5T/plexdb/issues</Support>
   <Project>https://github.com/TRU5T/plexdb</Project>
   <TemplateURL>https://raw.githubusercontent.com/TRU5T/plexdb/main/docs/plexdb-merge.xml</TemplateURL>
-  <Overview>Merge data from a corrupt Plex database into an older good backup. Web UI to compare and merge watch history, settings, and optionally new library items. Uses bundled SQLite with .recover support.</Overview>
+  <Overview>
+Plex library merge plus Radarr / Sonarr SQLite tools in one web UI.
+
+Plex: merge watch history and settings from a newer or corrupt com.plexapp.plugins.library.db into an older good backup; optional merge of new library items. Uses bundled SQLite with .recover support.
+
+Radarr / Sonarr: same maintenance flow for each app’s DB (integrity check, recover to a new file, VACUUM, REINDEX). Stop the app before repair or write operations.
+
+Mount a host folder that can reach your database paths. In the UI, set Start browse at if the file picker should open below /data.
+  </Overview>
   <Category>Utility</Category>
   <WebUI>http://[IP]:[PORT:5000]/</WebUI>
   <Icon>https://raw.githubusercontent.com/TRU5T/plexdb/main/docs/icon.png</Icon>
-  <Config Name="WebUI Port" Target="5000" Default="5000" Mode="tcp" Description="Plex DB Merge web interface port." Type="Port" Display="always" Required="true" Mask="false">5000</Config>
-  <Config Name="Data Path" Target="/data" Default="/mnt/user/appdata/plexdb" Mode="rw" Description="Path to folder containing your Plex DBs. On start, the container sets ownership to PUID:PGID so the app and your uploads can write. Set Start browse at to /data in the UI." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/plexdb</Config>
+  <Config Name="WebUI Port" Target="5000" Default="5000" Mode="tcp" Description="Web interface (Plex merge + *arr* SQLite tools)." Type="Port" Display="always" Required="true" Mask="false">5000</Config>
+  <Config Name="Data Path" Target="/data" Default="/mnt/user/appdata/plexdb" Mode="rw" Description="Host folder visible inside the container at /data. On start, ownership is set to PUID:PGID. Point the UI &quot;Start browse at&quot; here if your DBs live under this path." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/plexdb</Config>
   <Config Name="PUID" Target="PUID" Default="99" Mode="" Description="User ID for /data ownership and running the app (Unraid default 99 = nobody)." Type="Variable" Display="advanced" Required="false" Mask="false">99</Config>
   <Config Name="PGID" Target="PGID" Default="100" Mode="" Description="Group ID for /data ownership (Unraid default 100 = users)." Type="Variable" Display="advanced" Required="false" Mask="false">100</Config>
 </Container>
